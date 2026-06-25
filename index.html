@@ -395,7 +395,9 @@ nav{display:flex;gap:.32rem;flex-wrap:wrap}
 const SB_URL = "https://mccukdehnrwqbfashswd.supabase.co";
 const SB_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1jY3VrZGVobnJ3cWJmYXNoc3dkIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODIzNDQ0MTYsImV4cCI6MjA5NzkyMDQxNn0.WF00_n_Y0gbMTpKxMqzx3iasD2P5pNladLdAdowiuS4";
 const sb = window.supabase.createClient(SB_URL, SB_KEY);
-let _loginClave = ""; // clave temporal durante el proceso de login
+let _loginClave = "";       // clave temporal durante el proceso de login
+let loginEnCurso = false;   // evita envíos dobles (clic + Enter) mientras se verifica
+let loginSeq = 0;           // solo el último intento puede abrir sesión
 
 // ══════════════════════════════════════════════════════════════
 // DATOS: GRUPOS
@@ -566,7 +568,7 @@ const ASIGNACIONES_FIJAS={
   "valentina.paine.m@mail.pucv.cl":      {nombre:"Valentina Paine",     secOrigen:"ICM1010-02", grupoEvalua:"ICM1010-01-G10"},
   "christian.schnettler.b@mail.pucv.cl": {nombre:"Christian Schnettler",secOrigen:"ICM1010-02", grupoEvalua:"ICM1010-01-G5"},
   "rafael.soto.s@mail.pucv.cl":          {nombre:"Rafael Soto",         secOrigen:"ICM1010-02", grupoEvalua:"ICM1010-01-G7"},
-  // Nota: ICM1010-01-G3 (Banca-Mesa) queda sin estudiante evaluador (pendiente).
+  "inti.schultzki.f@mail.pucv.cl":       {nombre:"Inti Schultzki",      secOrigen:"ICM1010-02", grupoEvalua:"ICM1010-01-G3"},
 };
 
 // ══════════════════════════════════════════════════════════════
@@ -636,6 +638,10 @@ function go(n){
 // LOGIN
 // ══════════════════════════════════════════════════════════════
 async function doLogin(){
+  // Candado: si ya hay una verificación en curso, ignorar este envío
+  // (esto evita el bug de "un usuario atrasado" por doble clic o Enter).
+  if(loginEnCurso) return;
+
   const email=document.getElementById("l-email").value.trim().toLowerCase();
   const clave=document.getElementById("l-pass").value;
   const errEl=document.getElementById("login-err");
@@ -647,16 +653,31 @@ async function doLogin(){
   if(!clave){showErr("Ingresa tu contraseña.");document.getElementById("l-pass").classList.add("err");return;}
 
   // 0. Verificar correo + contraseña contra Supabase (servidor)
+  loginEnCurso=true;
+  const miSeq=++loginSeq;
   const btn=document.querySelector(".lbtn");
   if(btn){btn.disabled=true;btn.textContent="Verificando…";}
-  let ok=false;
+  let ok=false, fallo=null;
   try{
-    const { data, error } = await sb.rpc("verificar_login",{p_email:email,p_clave:clave});
-    if(error){ showErr("Error de conexión. Revisa tu internet e intenta de nuevo."); return; }
-    ok = (data===true);
-  }catch(e){ showErr("Error de conexión. Intenta de nuevo."); return; }
-  finally{ if(btn){btn.disabled=false;btn.textContent="Ingresar →";} }
+    // Carrera contra un tiempo límite por si el servidor está lento (incidencias de Supabase)
+    const rpc = sb.rpc("verificar_login",{p_email:email,p_clave:clave});
+    const timeout = new Promise((_,rej)=>setTimeout(()=>rej(new Error("timeout")),15000));
+    const { data, error } = await Promise.race([rpc, timeout]);
+    if(error){ fallo="conexion"; } else { ok = (data===true); }
+  }catch(e){ fallo = (e&&e.message==="timeout") ? "lento" : "conexion"; }
+  finally{ loginEnCurso=false; if(btn){btn.disabled=false;btn.textContent="Ingresar →";} }
 
+  // Si entre medio se inició otro intento, este queda obsoleto y no abre sesión.
+  if(miSeq!==loginSeq) return;
+
+  if(fallo==="lento"){
+    showErr("El servidor está lento en este momento. Espera unos segundos y vuelve a intentar.");
+    return;
+  }
+  if(fallo==="conexion"){
+    showErr("Error de conexión. Revisa tu internet e intenta de nuevo.");
+    return;
+  }
   if(!ok){
     showErr("Correo o contraseña incorrectos, o tu correo no está autorizado.");
     document.getElementById("l-pass").classList.add("err");
@@ -716,6 +737,7 @@ function cerrarSesion(){
   document.getElementById("user-chip-wrap").innerHTML="";
   document.getElementById("nav-dash").style.display="none";
   document.getElementById("l-email").value="";
+  document.getElementById("l-pass").value="";
   document.getElementById("login-err").style.display="none";
 }
 
